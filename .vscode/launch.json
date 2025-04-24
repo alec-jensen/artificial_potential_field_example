@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: Module – artificial_potential_field_example.main",
+        "type": "debugpy",                     // Use VS Code’s debugpy debugger :contentReference[oaicite:2]{index=2}
+        "request": "launch",                   // Launch a new process :contentReference[oaicite:3]{index=3}
+        "module": "artificial_potential_field_example.main",
+        "console": "integratedTerminal"        // Run in the integrated terminal :contentReference[oaicite:4]{index=4}
+      }
+    ]
+  }
+  

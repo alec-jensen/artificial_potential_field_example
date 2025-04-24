@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+# TODO: Use Djikstra's algorithm for pathfinding and APF for obstacle avoidance
+
 # Use absolute imports when running as script
 if __name__ == "__main__":
     from artificial_potential_field_example import ArtificialPotentialField

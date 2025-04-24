@@ -22,8 +22,8 @@ obstacles = [
 goal = (40, 40)  # Goal position
 start = (0, 0)  # Start position
 
-# create 5 random obstacles that dont intersect the start, goal, or each other
-for _ in range(5):
+# create n random obstacles that dont intersect the start, goal, or each other
+for _ in range(10):
     while True:
         x = np.random.uniform(0, 45)
         y = np.random.uniform(0, 45)

@@ -8,7 +8,7 @@ class ArtificialPotentialField:
         self.obstacles: Obstacles = obstacles
         self.k_att: float = 1.0  # Attractive gain
         self.k_rep: float = 100.0  # Increased repulsive gain
-        self.influence_factor: float = 2.0  # Increased influence radius multiplier
+        self.influence_factor: float = 1.5  # Increased influence radius multiplier
         self.noise_factor: float = 0.01  # Small random noise to break symmetry
 
     def compute_attractive_force(self, position: Position) -> Force:

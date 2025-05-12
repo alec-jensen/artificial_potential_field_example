@@ -1,4 +1,5 @@
 import math
+import random
 from .types import Position, Force, Obstacle, Obstacles
 
 class ArtificialPotentialField:

@@ -17,20 +17,25 @@ from typing import cast
 from mpl_toolkits.mplot3d import Axes3D  # For 3D plotting
 import heapq  # For global Dijkstra planner
 
-obstacles = []
+# Safety constants
+ROBOT_RADIUS = 1.0  # Physical size of the robot
+SAFETY_MARGIN = 0.5  # Extra buffer distance beyond robot radius
+TOTAL_SAFE_RADIUS = ROBOT_RADIUS + SAFETY_MARGIN  # Total safe distance from obstacles
+
+obstacles: list[Obstacle] = []
 
 goal = (40, 40)  # Goal position
 start = (0, 0)  # Start position
 
 # create n random obstacles that dont intersect the start, goal, or each other
-for _ in range(25):
+for _ in range(15):
     while True:
         x = np.random.uniform(0, 45)
         y = np.random.uniform(0, 45)
         radius = np.random.uniform(1, 4)
         # Check if the obstacle intersects with start or goal
-        if (x - start[0])**2 + (y - start[1])**2 > (radius + 1)**2 and \
-           (x - goal[0])**2 + (y - goal[1])**2 > (radius + 1)**2:
+        if (x - start[0])**2 + (y - start[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2 and \
+           (x - goal[0])**2 + (y - goal[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2:
             # Check if the obstacle intersects with existing obstacles
             intersects = False
             for obs in obstacles:
@@ -45,8 +50,8 @@ for _ in range(25):
 apf = ArtificialPotentialField(
     goal,
     obstacles,
-    xi=1.0,      # Attractive gain (formerly k_att)
-    eta=500.0,   # Repulsive gain (formerly k_rep)
+    xi=1.5,      # Attractive gain (formerly k_att)
+    eta=1000.0,   # Repulsive gain (formerly k_rep)
     sigma0=10.0, # Attractive threshold distance
     rho0=5.0,    # Repulsive influence radius (beyond obstacle radius)
     k_circ=100.0 # Circumferential gain (kept)
@@ -54,8 +59,13 @@ apf = ArtificialPotentialField(
 
 # Define global path computation using Dijkstra on a discrete grid
 
+# TODO: multiple resolution levels for the grid? i.e. use a finer grid closer to the robot and a coarser grid further away
 def compute_global_path(start: Tuple[float, float], goal: Tuple[float, float], obstacles: List[Obstacle],
-                         grid_min=0, grid_max=45, grid_step=1, robot_radius=1.0) -> List[Tuple[float, float]]:
+                         grid_min=0, grid_max=45, grid_step=0.5, robot_radius=None) -> Tuple[List[Tuple[float, float]], dict]:
+    # Use the defined total safe radius if not specified
+    if robot_radius is None:
+        robot_radius = TOTAL_SAFE_RADIUS
+    
     # Build grid coordinates
     xs = np.arange(grid_min, grid_max + grid_step, grid_step)
     ys = np.arange(grid_min, grid_max + grid_step, grid_step)
@@ -76,9 +86,11 @@ def compute_global_path(start: Tuple[float, float], goal: Tuple[float, float], o
     prev = {}
     hq = [(0.0, start_idx)]
     offsets = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    goal_reached = False
     while hq:
         d, u = heapq.heappop(hq)
         if u == goal_idx:
+            goal_reached = True
             break
         if d > dist[u]:
             continue
@@ -94,18 +106,34 @@ def compute_global_path(start: Tuple[float, float], goal: Tuple[float, float], o
                     heapq.heappush(hq, (nd, v))
     # Reconstruct path
     path = []
-    node = goal_idx
-    while node in prev:
-        path.append((xs[node[0]], ys[node[1]]))
-        node = prev[node]
-    path.append((xs[start_idx[0]], ys[start_idx[1]]))
-    path.reverse()
-    return path
+    if goal_reached:
+        node = goal_idx
+        while node in prev:
+            path.append((xs[node[0]], ys[node[1]]))
+            node = prev[node]
+        path.append((xs[start_idx[0]], ys[start_idx[1]]))
+        path.reverse()
+    else:
+        print("Warning: Global path planner (Dijkstra) could not find a path to the goal.")
+    
+    # Return path and grid information
+    grid_info = {
+        'free': free,
+        'xs': xs,
+        'ys': ys,
+        'start_idx': start_idx,
+        'goal_idx': goal_idx,
+        'dist': dist
+    }
+    return path, grid_info
 
 # Compute global path waypoints
-global_path = compute_global_path(start, goal, obstacles)
-print(f"Computed global path with {len(global_path)} waypoints.")
-print(f"Global path waypoints: {global_path}")
+# Rename the module-level variable to avoid confusion
+global_path_computed, grid_info = compute_global_path(start, goal, obstacles)
+if not global_path_computed:
+    print("Warning: Global path is empty. APF will navigate directly towards the goal without global guidance.")
+else:
+    print(f"Computed global path with {len(global_path_computed)} waypoints.")
 
 def calculate_potential(apf: ArtificialPotentialField, x: float, y: float) -> float:
     """Calculate the potential field value at a given point (x, y)."""
@@ -127,7 +155,7 @@ def calculate_potential(apf: ArtificialPotentialField, x: float, y: float) -> fl
     # Total potential
     return attractive_potential + repulsive_potential
 
-def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacles: List, path: Optional[List[Tuple]] = None, global_path: Optional[List[Tuple]] = None) -> None:
+def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacles: List, path: Optional[List[Tuple]] = None, global_path: Optional[List[Tuple]] = None, grid_info: Optional[dict] = None) -> None:
     """
     Visualize the artificial potential field, obstacles, goal, and path.
     
@@ -138,6 +166,7 @@ def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacl
         obstacles: List of obstacles (x, y, radius)
         path: List of positions along the path
         global_path: List of positions along the global path
+        grid_info: Dictionary containing occupancy grid information
     """
     # Ensure path and global_path lists and initialize coordinate arrays
     if path is None:
@@ -148,11 +177,23 @@ def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacl
     path_y: List[float] = []
     global_x: List[float] = []
     global_y: List[float] = []
-    # Create subplots: add a 3rd subplot for 3D surface
-    fig = plt.figure(figsize=(22, 7))
-    ax1 = fig.add_subplot(1, 3, 1)  # Vector field
-    ax2 = fig.add_subplot(1, 3, 2)  # Contour plot of potential field
-    ax3 = cast(Axes3D, fig.add_subplot(1, 3, 3, projection='3d'))  # 3D surface
+    
+    # Determine figure layout based on whether we have grid_info
+    fig = plt.figure(figsize=(22, 14))  # Increase height to accommodate 2 rows
+    
+    if grid_info:
+        # Create 2x2 grid with 4 subplots
+        ax1 = fig.add_subplot(2, 2, 1)  # Vector field
+        ax2 = fig.add_subplot(2, 2, 2)  # Contour plot of potential field
+        ax3 = cast(Axes3D, fig.add_subplot(2, 2, 3, projection='3d'))  # 3D surface
+        ax4 = fig.add_subplot(2, 2, 4)  # Occupancy grid
+    else:
+        # Original layout without occupancy grid in a 1x3 grid
+        fig = plt.figure(figsize=(22, 7))
+        ax1 = fig.add_subplot(1, 3, 1)  # Vector field
+        ax2 = fig.add_subplot(1, 3, 2)  # Contour plot of potential field
+        ax3 = cast(Axes3D, fig.add_subplot(1, 3, 3, projection='3d'))  # 3D surface
+        ax4 = None  # Explicitly set to None when not used
 
     # Create a grid of points
     x = np.linspace(-5, 45, 40)
@@ -251,7 +292,62 @@ def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacl
         ax3.plot(global_x, global_y, global_z, 'r--', linewidth=2, label='Global Path', alpha=0.6, zorder=2)
     ax3.legend()
     fig.colorbar(surf, ax=ax3, shrink=0.5, aspect=10, label='Potential Value')
-
+    
+    # Plot occupancy grid if available
+    if grid_info and ax4 is not None:
+        # Extract grid data
+        free = grid_info['free']
+        xs = grid_info['xs']
+        ys = grid_info['ys']
+        start_idx = grid_info['start_idx'] 
+        goal_idx = grid_info['goal_idx']
+        
+        # Create a distance-based coloring for the occupancy grid
+        # Initialize with high values
+        distance_map = np.ones_like(free, dtype=float) * float('inf')
+        
+        # Fill in distances where available in the dist dictionary
+        for (i, j), dist_val in grid_info['dist'].items():
+            if 0 <= i < len(xs) and 0 <= j < len(ys):
+                distance_map[i, j] = dist_val
+        
+        # Create a masked array for visualization (mask where free=False)
+        masked_distance = np.ma.masked_where(~free, distance_map)
+        
+        # Occupancy grid visualization - use tuple instead of list for extent
+        ax4.imshow(~free.T, origin='lower', extent=(xs[0], xs[-1], ys[0], ys[-1]), 
+                  cmap='Greys', alpha=0.7, aspect='auto')
+        
+        # Plot distances as a heatmap overlay on free cells
+        if goal_idx in grid_info['dist']:  # Only if path exists
+            dist_plot = ax4.imshow(masked_distance.T, origin='lower', 
+                                  extent=(xs[0], xs[-1], ys[0], ys[-1]),
+                                  cmap='plasma_r', alpha=0.5, aspect='auto')
+            plt.colorbar(dist_plot, ax=ax4, label='Distance from start')
+        
+        # Plot start and goal
+        ax4.plot(xs[start_idx[0]], ys[start_idx[1]], 'bo', markersize=10, label='Start')
+        ax4.plot(xs[goal_idx[0]], ys[goal_idx[1]], 'g*', markersize=15, label='Goal')
+        
+        # Plot actual APF path
+        if path:
+            ax4.plot(path_x, path_y, 'g-', linewidth=2, label='Path', zorder=1)
+            
+        # Plot global Dijkstra path
+        if global_path:
+            ax4.plot(global_x, global_y, 'r--', linewidth=2, label='Global Path', alpha=0.8, zorder=2)
+        
+        # Add obstacle markers
+        for obs in obstacles:
+            circle = patches.Circle((obs[0], obs[1]), obs[2], color='red', alpha=0.5)
+            ax4.add_patch(circle)
+            
+        ax4.set_title('Occupancy Grid with Path Planning')
+        ax4.set_xlabel('X')
+        ax4.set_ylabel('Y')
+        ax4.legend()
+        ax4.grid(True)
+        
     plt.tight_layout()
     plt.savefig('apf_visualization.png')
     plt.show()
@@ -261,7 +357,7 @@ def main():
     position = start
     print(f"Starting at position: {position}")
     print(f"Goal position: {goal}")
-    print(f"Obstacles: {obstacles}")
+    print(f"Using robot radius: {ROBOT_RADIUS} with safety margin: {SAFETY_MARGIN}")
     
     # Keep track of the path
     path: List[Tuple[float, float]] = [position]
@@ -270,26 +366,28 @@ def main():
     velocity = (0.0, 0.0)
     beta = 0.8  # Momentum coefficient (0=no momentum, 1=full momentum)
     force_scale = 1.0  # Optionally scale the force contribution
-    path_guidance_weight = 0.7  # Increased guidance weight
+    path_guidance_weight = 0.7  # Increased guidance weight (was 0.4)
     max_velocity = 1.0  # Maximum velocity magnitude
 
     # Run simulation until goal is reached or maximum iterations
     max_iterations = 1000
     step_size = 0.5  # Step size for movement
     
-    # Hybrid global+local: initialize waypoint following
+    # --- Hybrid global+local: initialize waypoint following ---
+    # Use a local variable to manage the waypoints being followed. Make a copy.
+    current_waypoints = list(global_path_computed)
     waypoint_idx = 1
-    total_waypoints = len(global_path)
+    total_waypoints = len(current_waypoints)
     local_threshold = 1.0  # distance to switch waypoint
-    # Use goal directly if no intermediate waypoints
+    # Use goal directly if no intermediate waypoints or if path is empty
     if total_waypoints > 1:
-        local_goal = global_path[waypoint_idx]
+        local_goal = current_waypoints[waypoint_idx]
     else:
         local_goal = goal
     
     i = 0
     for i in range(max_iterations):
-        # Compute force using APF towards local goal
+        # Compute force using APF (implicitly uses final goal)
         force = apf.compute_total_force(position)
         
         # Normalize force for more consistent step sizes
@@ -300,19 +398,27 @@ def main():
             normalized_force = (0, 0)
         
         # Compute guidance direction toward current local waypoint
-        guidance_vec = (local_goal[0] - position[0], local_goal[1] - position[1])
+        current_local_goal = local_goal # Use the dynamic local_goal
+        guidance_vec = (current_local_goal[0] - position[0], current_local_goal[1] - position[1])
         guidance_mag = (guidance_vec[0]**2 + guidance_vec[1]**2)**0.5
         if guidance_mag > 0:
             normalized_guidance = (guidance_vec[0]/guidance_mag, guidance_vec[1]/guidance_mag)
         else:
             normalized_guidance = (0.0, 0.0)
-        # Blend APF force with guidance force
-        blended_force = (
-            (1 - path_guidance_weight) * normalized_force[0] + path_guidance_weight * normalized_guidance[0],
-            (1 - path_guidance_weight) * normalized_force[1] + path_guidance_weight * normalized_guidance[1]
-        )
-        # Override normalized_force to include guidance
-        normalized_force = blended_force
+        
+        # Blend APF force with guidance force (only if following waypoints)
+        if current_waypoints: # Check the local list of waypoints
+            blended_force = (
+                (1 - path_guidance_weight) * normalized_force[0] + path_guidance_weight * normalized_guidance[0],
+                (1 - path_guidance_weight) * normalized_force[1] + path_guidance_weight * normalized_guidance[1]
+            )
+            # Re-normalize the blended force
+            blended_mag = (blended_force[0]**2 + blended_force[1]**2)**0.5
+            if blended_mag > 0:
+                 normalized_force = (blended_force[0]/blended_mag, blended_force[1]/blended_mag)
+            else:
+                 normalized_force = (0,0) # Reset if magnitude is zero
+            # If not current_waypoints, normalized_force remains the pure APF force
         
         # --- Update velocity with momentum ---
         velocity = (
@@ -327,31 +433,33 @@ def main():
         # --- Update position using velocity ---
         new_position = (position[0] + velocity[0], position[1] + velocity[1])
         
-        if i % 10 == 0 or i < 10:  # Print only every 10th step after the first 10
-            print(f"Step {i+1}")
-            print(f"  Position: {position}")
-            print(f"  Force: {force}")
-            print(f"  Velocity: {velocity}")
-            print(f"  New Position: {new_position}")
-        
         position = new_position
         path.append(position)
         
-        # Check if reached local waypoint
-        dist_loc = ((position[0] - local_goal[0])**2 + (position[1] - local_goal[1])**2)**0.5
-        if dist_loc < local_threshold:
-            waypoint_idx += 1
-            if waypoint_idx >= total_waypoints:
-                print(f"Reached final waypoint. Goal achieved.")
-                break
-            local_goal = global_path[waypoint_idx]
-            print(f"Switching to next waypoint: {local_goal}")
+        # Check if reached local waypoint (only if following waypoints)
+        if current_waypoints: # Check the local list
+            dist_loc = ((position[0] - local_goal[0])**2 + (position[1] - local_goal[1])**2)**0.5
+            if dist_loc < local_threshold:
+                waypoint_idx += 1
+                if waypoint_idx >= total_waypoints:
+                    print(f"Reached final waypoint. Switching to final goal.")
+                    local_goal = goal
+                    current_waypoints = [] # Clear the local list to stop following
+                else:
+                    local_goal = current_waypoints[waypoint_idx]
+                    print(f"Switching to next waypoint ({waypoint_idx}/{total_waypoints-1}): {local_goal}")
+        
+        # Check if reached final goal - use ROBOT_RADIUS as the threshold
+        dist_final_goal = ((position[0] - goal[0])**2 + (position[1] - goal[1])**2)**0.5
+        if dist_final_goal < ROBOT_RADIUS:
+             print(f"Reached final goal at step {i+1}.")
+             break
     
     if i == max_iterations - 1:
         print(f"Maximum iterations ({max_iterations}) reached without finding goal.")
     
-    # Visualize the field and path
-    plot_field(apf, start, goal, obstacles, path, global_path)
+    # Visualize the field and path, passing the original computed path and grid info for visualization
+    plot_field(apf, start, goal, obstacles, path, global_path_computed, grid_info)
 
 if __name__ == "__main__":
     main()

@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 
-# Use absolute imports when running as script
-if __name__ == "__main__":
-    from artificial_potential_field_example import ArtificialPotentialField
-    from artificial_potential_field_example.types import Obstacle
-else:
-    # Use relative imports when imported as a module
-    from . import ArtificialPotentialField
-    from .types import Obstacle
+from . import ArtificialPotentialField
+from .types import Obstacle
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -22,40 +16,47 @@ ROBOT_RADIUS = 1.0  # Physical size of the robot
 SAFETY_MARGIN = 0.5  # Extra buffer distance beyond robot radius
 TOTAL_SAFE_RADIUS = ROBOT_RADIUS + SAFETY_MARGIN  # Total safe distance from obstacles
 
-obstacles: list[Obstacle] = []
-
-goal = (40, 40)  # Goal position
-start = (0, 0)  # Start position
-
-# create n random obstacles that dont intersect the start, goal, or each other
-for _ in range(15):
-    while True:
-        x = np.random.uniform(0, 45)
-        y = np.random.uniform(0, 45)
-        radius = np.random.uniform(1, 4)
-        # Check if the obstacle intersects with start or goal
-        if (x - start[0])**2 + (y - start[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2 and \
-           (x - goal[0])**2 + (y - goal[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2:
-            # Check if the obstacle intersects with existing obstacles
-            intersects = False
-            for obs in obstacles:
-                if (x - obs[0])**2 + (y - obs[1])**2 < (radius + obs[2])**2:
-                    intersects = True
+def generate_random_obstacles(start: Tuple[float, float], goal: Tuple[float, float], 
+                            num_obstacles: int = 15, world_bounds: Tuple[float, float] = (45, 45),
+                            min_radius: float = 1.0, max_radius: float = 4.0) -> List[Obstacle]:
+    """
+    Generate random obstacles that don't intersect with start, goal, or each other.
+    
+    Args:
+        start: Start position (x, y)
+        goal: Goal position (x, y)
+        num_obstacles: Number of obstacles to generate
+        world_bounds: World size (width, height)
+        min_radius: Minimum obstacle radius
+        max_radius: Maximum obstacle radius
+    
+    Returns:
+        List of obstacles (x, y, radius)
+    """
+    obstacles: List[Obstacle] = []
+    
+    for _ in range(num_obstacles):
+        attempts = 0
+        while attempts < 100:  # Prevent infinite loops
+            x = np.random.uniform(0, world_bounds[0])
+            y = np.random.uniform(0, world_bounds[1])
+            radius = np.random.uniform(min_radius, max_radius)
+            
+            # Check if the obstacle intersects with start or goal
+            if (x - start[0])**2 + (y - start[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2 and \
+               (x - goal[0])**2 + (y - goal[1])**2 > (radius + TOTAL_SAFE_RADIUS)**2:
+                # Check if the obstacle intersects with existing obstacles
+                intersects = False
+                for obs in obstacles:
+                    if (x - obs[0])**2 + (y - obs[1])**2 < (radius + obs[2])**2:
+                        intersects = True
+                        break
+                if not intersects:
+                    obstacles.append((x, y, radius))
                     break
-            if not intersects:
-                obstacles.append((x, y, radius))
-                break
-
-# Instantiate APF with the new parameters
-apf = ArtificialPotentialField(
-    goal,
-    obstacles,
-    xi=1.5,      # Attractive gain (formerly k_att)
-    eta=1000.0,   # Repulsive gain (formerly k_rep)
-    sigma0=10.0, # Attractive threshold distance
-    rho0=5.0,    # Repulsive influence radius (beyond obstacle radius)
-    k_circ=100.0 # Circumferential gain (kept)
-)
+            attempts += 1
+    
+    return obstacles
 
 # Define global path computation using Dijkstra on a discrete grid
 
@@ -127,15 +128,27 @@ def compute_global_path(start: Tuple[float, float], goal: Tuple[float, float], o
     }
     return path, grid_info
 
-# Compute global path waypoints
-# Rename the module-level variable to avoid confusion
-global_path_computed, grid_info = compute_global_path(start, goal, obstacles)
-if not global_path_computed:
-    print("Warning: Global path is empty. APF will navigate directly towards the goal without global guidance.")
-else:
-    print(f"Computed global path with {len(global_path_computed)} waypoints.")
-
 def calculate_potential(apf: ArtificialPotentialField, x: float, y: float) -> float:
+    """Calculate the potential field value at a given point (x, y)."""
+    # Attractive potential (distance to goal)
+    dx = x - apf.goal[0]
+    dy = y - apf.goal[1]
+    attractive_potential = np.sqrt(dx**2 + dy**2)
+    
+    # Repulsive potential (inverse distance to obstacles)
+    repulsive_potential = 0
+    for obs in apf.obstacles:
+        dx = x - obs[0]
+        dy = y - obs[1]
+        distance = np.sqrt(dx**2 + dy**2)
+        radius = obs[2]
+        if distance < radius * 2:  # Influence radius is twice the physical radius
+            repulsive_potential += (1.0 / max(distance, 0.1)) * 10  # Scale for visibility
+    
+    # Total potential
+    return attractive_potential + repulsive_potential
+
+    return path, grid_info
     """Calculate the potential field value at a given point (x, y)."""
     # Attractive potential (distance to goal)
     dx = x - apf.goal[0]
@@ -352,114 +365,323 @@ def plot_field(apf: ArtificialPotentialField, start: Tuple, goal: Tuple, obstacl
     plt.savefig('apf_visualization.png')
     plt.show()
 
+class APFSimulator:
+    """
+    A complete APF simulator that combines APF with Dijkstra path planning.
+    """
+    
+    def __init__(self, start: Tuple[float, float], goal: Tuple[float, float], obstacles: List[Obstacle],
+                 xi: float = 1.5, eta: float = 1000.0, sigma0: float = 10.0, 
+                 rho0: float = 5.0, k_circ: float = 100.0):
+        """
+        Initialize the APF simulator.
+        
+        Args:
+            start: Starting position (x, y)
+            goal: Goal position (x, y)
+            obstacles: List of obstacles (x, y, radius)
+            xi: Attractive gain constant
+            eta: Repulsive gain constant
+            sigma0: Distance threshold for attractive force behavior change
+            rho0: Radius of influence for repulsive force
+            k_circ: Circumferential gain for rotation field
+        """
+        self.start = start
+        self.goal = goal
+        self.obstacles = obstacles
+        
+        # Create APF instance
+        self.apf = ArtificialPotentialField(goal, obstacles, xi, eta, sigma0, rho0, k_circ)
+        
+        # Compute global path
+        self.global_path, self.grid_info = compute_global_path(start, goal, obstacles)
+        
+    def simulate(self, max_iterations: int = 1000, step_size: float = 0.5, 
+                 beta: float = 0.8, path_guidance_weight: float = 0.7,
+                 max_velocity: float = 1.0) -> Tuple[List[Tuple[float, float]], bool]:
+        """
+        Run the APF simulation.
+        
+        Args:
+            max_iterations: Maximum number of simulation steps
+            step_size: Step size for movement
+            beta: Momentum coefficient (0=no momentum, 1=full momentum)
+            path_guidance_weight: Weight for global path guidance
+            max_velocity: Maximum velocity magnitude
+            
+        Returns:
+            Tuple of (path, success) where path is list of positions and success is bool
+        """
+        position = self.start
+        path: List[Tuple[float, float]] = [position]
+        
+        # Momentum and velocity initialization
+        velocity = (0.0, 0.0)
+        force_scale = 1.0
+        
+        # Hybrid global+local: initialize waypoint following
+        current_waypoints = list(self.global_path)
+        waypoint_idx = 1
+        total_waypoints = len(current_waypoints)
+        local_threshold = 1.0  # distance to switch waypoint
+        
+        # Use goal directly if no intermediate waypoints or if path is empty
+        if total_waypoints > 1:
+            local_goal = current_waypoints[waypoint_idx]
+        else:
+            local_goal = self.goal
+        
+        for i in range(max_iterations):
+            # Compute force using APF
+            force = self.apf.compute_total_force(position)
+            
+            # Normalize force for more consistent step sizes
+            force_magnitude = (force[0]**2 + force[1]**2)**0.5
+            if force_magnitude > 0:
+                normalized_force = (force[0]/force_magnitude, force[1]/force_magnitude)
+            else:
+                normalized_force = (0, 0)
+            
+            # Compute guidance direction toward current local waypoint
+            guidance_vec = (local_goal[0] - position[0], local_goal[1] - position[1])
+            guidance_mag = (guidance_vec[0]**2 + guidance_vec[1]**2)**0.5
+            if guidance_mag > 0:
+                normalized_guidance = (guidance_vec[0]/guidance_mag, guidance_vec[1]/guidance_mag)
+            else:
+                normalized_guidance = (0.0, 0.0)
+            
+            # Blend APF force with guidance force (only if following waypoints)
+            if current_waypoints:
+                blended_force = (
+                    (1 - path_guidance_weight) * normalized_force[0] + path_guidance_weight * normalized_guidance[0],
+                    (1 - path_guidance_weight) * normalized_force[1] + path_guidance_weight * normalized_guidance[1]
+                )
+                # Re-normalize the blended force
+                blended_mag = (blended_force[0]**2 + blended_force[1]**2)**0.5
+                if blended_mag > 0:
+                    normalized_force = (blended_force[0]/blended_mag, blended_force[1]/blended_mag)
+                else:
+                    normalized_force = (0, 0)
+            
+            # Update velocity with momentum
+            velocity = (
+                beta * velocity[0] + (1 - beta) * normalized_force[0] * step_size * force_scale,
+                beta * velocity[1] + (1 - beta) * normalized_force[1] * step_size * force_scale
+            )
+            
+            # Clamp velocity to maximum magnitude
+            vel_mag = (velocity[0]**2 + velocity[1]**2)**0.5
+            if vel_mag > max_velocity:
+                velocity = (velocity[0]/vel_mag * max_velocity, velocity[1]/vel_mag * max_velocity)
+            
+            # Update position using velocity
+            position = (position[0] + velocity[0], position[1] + velocity[1])
+            path.append(position)
+            
+            # Check if reached local waypoint (only if following waypoints)
+            if current_waypoints:
+                dist_loc = ((position[0] - local_goal[0])**2 + (position[1] - local_goal[1])**2)**0.5
+                if dist_loc < local_threshold:
+                    waypoint_idx += 1
+                    if waypoint_idx >= total_waypoints:
+                        local_goal = self.goal
+                        current_waypoints = []
+                    else:
+                        local_goal = current_waypoints[waypoint_idx]
+            
+            # Check if reached final goal
+            dist_final_goal = ((position[0] - self.goal[0])**2 + (position[1] - self.goal[1])**2)**0.5
+            if dist_final_goal < ROBOT_RADIUS:
+                return path, True
+        
+        return path, False
+    
+    def visualize(self, path: Optional[List[Tuple[float, float]]] = None) -> None:
+        """
+        Visualize the APF field and path.
+        
+        Args:
+            path: Optional path to visualize. If None, runs simulation first.
+        """
+        if path is None:
+            path, _ = self.simulate()
+        
+        plot_field(self.apf, self.start, self.goal, self.obstacles, path, self.global_path, self.grid_info)
+
 def main():
     """Run a simple demonstration of the artificial potential field."""
-    position = start
-    print(f"Starting at position: {position}")
+    # Demo parameters
+    start = (0, 0)
+    goal = (40, 40)
+    
+    # Generate random obstacles
+    obstacles = generate_random_obstacles(start, goal)
+    
+    # Create simulator
+    simulator = APFSimulator(start, goal, obstacles)
+    
+    # Run simulation
+    path, success = simulator.simulate()
+    
+    print(f"Starting at position: {start}")
     print(f"Goal position: {goal}")
     print(f"Using robot radius: {ROBOT_RADIUS} with safety margin: {SAFETY_MARGIN}")
     
-    # Keep track of the path
-    path: List[Tuple[float, float]] = [position]
-    
-    # --- Momentum and velocity initialization ---
-    velocity = (0.0, 0.0)
-    beta = 0.8  # Momentum coefficient (0=no momentum, 1=full momentum)
-    force_scale = 1.0  # Optionally scale the force contribution
-    path_guidance_weight = 0.7  # Increased guidance weight (was 0.4)
-    max_velocity = 1.0  # Maximum velocity magnitude
-
-    # Run simulation until goal is reached or maximum iterations
-    max_iterations = 1000
-    step_size = 0.5  # Step size for movement
-    
-    # --- Hybrid global+local: initialize waypoint following ---
-    # Use a local variable to manage the waypoints being followed. Make a copy.
-    current_waypoints = list(global_path_computed)
-    waypoint_idx = 1
-    total_waypoints = len(current_waypoints)
-    local_threshold = 1.0  # distance to switch waypoint
-    # Use goal directly if no intermediate waypoints or if path is empty
-    if total_waypoints > 1:
-        local_goal = current_waypoints[waypoint_idx]
+    if success:
+        print(f"Reached goal in {len(path)} steps.")
     else:
-        local_goal = goal
+        print("Failed to reach goal within maximum iterations.")
     
-    i = 0
-    for i in range(max_iterations):
-        # Compute force using APF (implicitly uses final goal)
-        force = apf.compute_total_force(position)
-        
-        # Normalize force for more consistent step sizes
-        force_magnitude = (force[0]**2 + force[1]**2)**0.5
-        if force_magnitude > 0:
-            normalized_force = (force[0]/force_magnitude, force[1]/force_magnitude)
-        else:
-            normalized_force = (0, 0)
-        
-        # Compute guidance direction toward current local waypoint
-        current_local_goal = local_goal # Use the dynamic local_goal
-        guidance_vec = (current_local_goal[0] - position[0], current_local_goal[1] - position[1])
-        guidance_mag = (guidance_vec[0]**2 + guidance_vec[1]**2)**0.5
-        if guidance_mag > 0:
-            normalized_guidance = (guidance_vec[0]/guidance_mag, guidance_vec[1]/guidance_mag)
-        else:
-            normalized_guidance = (0.0, 0.0)
-        
-        # Blend APF force with guidance force (only if following waypoints)
-        if current_waypoints: # Check the local list of waypoints
-            blended_force = (
-                (1 - path_guidance_weight) * normalized_force[0] + path_guidance_weight * normalized_guidance[0],
-                (1 - path_guidance_weight) * normalized_force[1] + path_guidance_weight * normalized_guidance[1]
-            )
-            # Re-normalize the blended force
-            blended_mag = (blended_force[0]**2 + blended_force[1]**2)**0.5
-            if blended_mag > 0:
-                 normalized_force = (blended_force[0]/blended_mag, blended_force[1]/blended_mag)
-            else:
-                 normalized_force = (0,0) # Reset if magnitude is zero
-            # If not current_waypoints, normalized_force remains the pure APF force
-        
-        # --- Update velocity with momentum ---
-        velocity = (
-            beta * velocity[0] + (1 - beta) * normalized_force[0] * step_size * force_scale,
-            beta * velocity[1] + (1 - beta) * normalized_force[1] * step_size * force_scale
+    # Visualize results
+    simulator.visualize(path)
+
+
+def run_demo():
+    """Run the APF demo as a function, for modular use."""
+    main()
+
+def demo_basic_usage():
+    """Demonstrate basic usage of the APF module components."""
+    print("=== APF Module Demo - Basic Usage ===")
+    
+    # Setup
+    start = (5, 5)
+    goal = (35, 35)
+    obstacles: List[Obstacle] = [(15, 15, 3), (25, 10, 2), (20, 25, 4)]
+    
+    print(f"Start: {start}")
+    print(f"Goal: {goal}")
+    print(f"Obstacles: {obstacles}")
+    print()
+    
+    # 1. Basic APF usage
+    print("1. Creating APF instance and computing forces:")
+    apf = ArtificialPotentialField(goal, obstacles, xi=2.0, eta=500.0)
+    
+    test_positions = [(0, 0), (10, 10), (20, 20), (30, 30)]
+    for pos in test_positions:
+        force = apf.compute_total_force(pos)
+        attractive = apf.compute_attractive_force(pos)
+        repulsive = apf.compute_repulsive_force(pos)
+        print(f"  Position {pos}: Total={force}, Attractive={attractive}, Repulsive={repulsive}")
+    print()
+    
+    # 2. Global path planning
+    print("2. Computing global path with Dijkstra:")
+    global_path, grid_info = compute_global_path(start, goal, obstacles)
+    print(f"  Global path has {len(global_path)} waypoints")
+    if global_path:
+        print(f"  First few waypoints: {global_path[:3]}")
+    print()
+    
+    # 3. Complete simulation
+    print("3. Running complete APF simulation:")
+    simulator = APFSimulator(start, goal, obstacles)
+    path, success = simulator.simulate(max_iterations=500)
+    
+    if success:
+        print(f"  ✓ Successfully reached goal in {len(path)} steps")
+        print(f"  Final position: {path[-1]}")
+    else:
+        print(f"  ✗ Failed to reach goal after {len(path)} steps")
+    print()
+    
+    # 4. Visualization (optional)
+    print("4. Visualization available via simulator.visualize(path)")
+    print("   Call simulator.visualize() to see the complete field visualization")
+    print()
+    
+    return simulator, path, success
+
+def demo_advanced_features():
+    """Demonstrate advanced features like parameter tuning and obstacle generation."""
+    print("=== APF Module Demo - Advanced Features ===")
+    
+    # 1. Random obstacle generation
+    print("1. Generating random obstacles:")
+    start = (2, 2)
+    goal = (38, 38)
+    obstacles = generate_random_obstacles(
+        start, goal, 
+        num_obstacles=10, 
+        world_bounds=(40, 40),
+        min_radius=1.0, 
+        max_radius=3.0
+    )
+    print(f"  Generated {len(obstacles)} random obstacles")
+    print(f"  Sample obstacles: {obstacles[:3]}")
+    print()
+    
+    # 2. Parameter comparison
+    print("2. Comparing different APF parameters:")
+    test_pos = (20, 20)
+    
+    # Different parameter sets
+    param_sets = [
+        {"xi": 1.0, "eta": 100.0, "name": "Low repulsion"},
+        {"xi": 2.0, "eta": 1000.0, "name": "High repulsion"},
+        {"xi": 0.5, "eta": 500.0, "name": "Weak attraction"},
+    ]
+    
+    for params in param_sets:
+        apf = ArtificialPotentialField(
+            goal, obstacles, 
+            xi=params["xi"], 
+            eta=params["eta"]
         )
-        # Clamp velocity to maximum magnitude
-        vel_mag = (velocity[0]**2 + velocity[1]**2)**0.5
-        if vel_mag > max_velocity:
-            velocity = (velocity[0]/vel_mag * max_velocity, velocity[1]/vel_mag * max_velocity)
-        
-        # --- Update position using velocity ---
-        new_position = (position[0] + velocity[0], position[1] + velocity[1])
-        
-        position = new_position
-        path.append(position)
-        
-        # Check if reached local waypoint (only if following waypoints)
-        if current_waypoints: # Check the local list
-            dist_loc = ((position[0] - local_goal[0])**2 + (position[1] - local_goal[1])**2)**0.5
-            if dist_loc < local_threshold:
-                waypoint_idx += 1
-                if waypoint_idx >= total_waypoints:
-                    print(f"Reached final waypoint. Switching to final goal.")
-                    local_goal = goal
-                    current_waypoints = [] # Clear the local list to stop following
-                else:
-                    local_goal = current_waypoints[waypoint_idx]
-                    print(f"Switching to next waypoint ({waypoint_idx}/{total_waypoints-1}): {local_goal}")
-        
-        # Check if reached final goal - use ROBOT_RADIUS as the threshold
-        dist_final_goal = ((position[0] - goal[0])**2 + (position[1] - goal[1])**2)**0.5
-        if dist_final_goal < ROBOT_RADIUS:
-             print(f"Reached final goal at step {i+1}.")
-             break
+        force = apf.compute_total_force(test_pos)
+        print(f"  {params['name']}: Force at {test_pos} = {force}")
+    print()
     
-    if i == max_iterations - 1:
-        print(f"Maximum iterations ({max_iterations}) reached without finding goal.")
+    # 3. Simulation with different settings
+    print("3. Running simulations with different momentum settings:")
+    simulator = APFSimulator(start, goal, obstacles)
     
-    # Visualize the field and path, passing the original computed path and grid info for visualization
-    plot_field(apf, start, goal, obstacles, path, global_path_computed, grid_info)
+    momentum_settings = [
+        {"beta": 0.0, "name": "No momentum"},
+        {"beta": 0.5, "name": "Medium momentum"},
+        {"beta": 0.9, "name": "High momentum"},
+    ]
+    
+    for setting in momentum_settings:
+        path, success = simulator.simulate(
+            max_iterations=300,
+            beta=setting["beta"],
+            step_size=0.3
+        )
+        status = "✓ Success" if success else "✗ Failed"
+        print(f"  {setting['name']}: {status}, {len(path)} steps")
+    print()
+    
+    return simulator
+
+def demo_comprehensive():
+    """Run a comprehensive demo showing all features."""
+    print("=== Comprehensive APF Module Demo ===")
+    print()
+    
+    # Run basic demo
+    simulator1, path1, success1 = demo_basic_usage()
+    
+    # Run advanced demo
+    simulator2 = demo_advanced_features()
+    
+    print("=== Summary ===")
+    print("This demo showcased:")
+    print("- Basic APF force computation")
+    print("- Global path planning with Dijkstra")
+    print("- Complete APF simulation")
+    print("- Random obstacle generation")
+    print("- Parameter tuning effects")
+    print("- Momentum settings comparison")
+    print()
+    print("For visualization, call:")
+    print("  simulator.visualize(path)")
+    print("or:")
+    print("  simulator.visualize()  # runs simulation first")
+    print()
+    
+    return simulator1, simulator2
 
 if __name__ == "__main__":
     main()

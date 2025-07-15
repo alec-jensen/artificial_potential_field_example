@@ -1,10 +1,13 @@
 [project]
 name = "artificial-potential-field-example"
 version = "0.1.0"
-description = "Add your description here"
+description = "A reusable Python module for hybrid Artificial Potential Field + Dijkstra path planning with obstacle avoidance."
+authors = [
+    { name = "Alec Jensen" }
+]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.8"
 dependencies = [
-    "numpy~=2.2.5",
-    "matplotlib~=3.10.1",
+    "numpy>=1.21",
+    "matplotlib>=3.4",
 ]
